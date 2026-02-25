@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hybrid Chat API Tester</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #131a2e;
+      --panel-2: #1c2642;
+      --text: #f4f7ff;
+      --muted: #a7b0c7;
+      --accent: #27d9a0;
+      --accent-2: #49a3ff;
+      --danger: #ff7272;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--text);
+      background: radial-gradient(1200px 600px at 10% 10%, #152347, var(--bg));
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .wrap {
+      max-width: 920px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      background: linear-gradient(165deg, var(--panel), var(--panel-2));
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      padding: 16px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      letter-spacing: 0.3px;
+    }
+
+    p { margin: 0; color: var(--muted); }
+
+    textarea {
+      width: 100%;
+      min-height: 110px;
+      margin-top: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 10px;
+      background: rgba(0, 0, 0, 0.28);
+      color: var(--text);
+      padding: 12px;
+      resize: vertical;
+      outline: none;
+    }
+
+    .controls {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: #06121f;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn-chat { background: var(--accent); }
+    .btn-stream { background: var(--accent-2); color: #081726; }
+    .btn-stop { background: var(--danger); color: #300; }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 10px;
+      padding: 12px;
+      margin: 10px 0 0;
+      min-height: 120px;
+    }
+
+    .meta {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Hybrid PDF + Weather Chat</h1>
+      <p>Use <code>/chat</code> for full response or <code>/chat/stream</code> for token streaming.</p>
+      <textarea id="question" placeholder="Ask about the PDF or weather in a city..."></textarea>
+      <div class="controls">
+        <button class="btn-chat" id="askBtn">Send /chat</button>
+        <button class="btn-stream" id="streamBtn">Send /chat/stream</button>
+        <button class="btn-stop" id="stopBtn">Stop Stream</button>
+      </div>
+      <div class="meta" id="status">Status: idle</div>
+    </div>
+
+    <div class="card">
+      <h1>Answer</h1>
+      <pre id="answer"></pre>
+      <div class="meta">Metadata</div>
+      <pre id="metadata"></pre>
+    </div>
+  </div>
+
+  <script>
+    const questionEl = document.getElementById('question');
+    const answerEl = document.getElementById('answer');
+    const metadataEl = document.getElementById('metadata');
+    const statusEl = document.getElementById('status');
+
+    const askBtn = document.getElementById('askBtn');
+    const streamBtn = document.getElementById('streamBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    let controller = null;
+
+    function setStatus(text) {
+      statusEl.textContent = `Status: ${text}`;
+    }
+
+    function getQuestion() {
+      return questionEl.value.trim();
+    }
+
+    askBtn.addEventListener('click', async () => {
+      const question = getQuestion();
+      if (!question) {
+        setStatus('please enter a question');
+        return;
+      }
+
+      setStatus('waiting for /chat response...');
+      answerEl.textContent = '';
+      metadataEl.textContent = '';
+
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          answerEl.textContent = data.detail || 'Request failed';
+          setStatus('error');
+          return;
+        }
+
+        answerEl.textContent = data.answer || '';
+        metadataEl.textContent = JSON.stringify(data.metadata || {}, null, 2);
+        setStatus(`done (${data.route})`);
+      } catch (err) {
+        answerEl.textContent = String(err);
+        setStatus('error');
+      }
+    });
+
+    streamBtn.addEventListener('click', async () => {
+      const question = getQuestion();
+      if (!question) {
+        setStatus('please enter a question');
+        return;
+      }
+
+      controller = new AbortController();
+      answerEl.textContent = '';
+      metadataEl.textContent = 'Streaming endpoint returns token chunks only.';
+      setStatus('streaming /chat/stream...');
+
+      try {
+        const res = await fetch('/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question }),
+          signal: controller.signal
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          answerEl.textContent = errText || 'Stream request failed';
+          setStatus('error');
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          answerEl.textContent += decoder.decode(value, { stream: true });
+        }
+
+        setStatus('stream complete');
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          setStatus('stream aborted');
+        } else {
+          answerEl.textContent += `\n${String(err)}`;
+          setStatus('error');
+        }
+      } finally {
+        controller = null;
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (controller) {
+        controller.abort();
+      }
+    });
+  </script>
+</body>
+</html>
